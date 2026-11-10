@@ -110,7 +110,15 @@ func mainWindow(_ application: AXUIElement) throws -> AXUIElement {
 }
 func ensureChats(_ application: AXUIElement) throws -> AXUIElement {
     let main = try mainWindow(application)
-    func isChats() -> Bool { elements(main).contains { string($0, "AXRole") == "AXStaticText" && ["채팅", "Chats"].contains(string($0, "AXValue")) } }
+    // Older builds title the chats pane with a static text. KakaoTalk 26.9 replaced it
+    // with a "채팅 | 오픈채팅" toggle, exposed as a top-level button described "채팅".
+    func isChats() -> Bool {
+        elements(main).contains {
+            let role = string($0, "AXRole")
+            return (role == "AXStaticText" && ["채팅", "Chats"].contains(string($0, "AXValue")))
+                || (role == "AXButton" && ["채팅", "Chats"].contains(string($0, "AXDescription")))
+        }
+    }
     if isChats() { return main }
     guard let bar = attr(application, "AXMenuBar") else { throw ControlFailure.blocked("chats_menu_unavailable") }
     let top = elements(bar as! AXUIElement).filter { ["창", "Window"].contains(string($0, "AXTitle")) }
