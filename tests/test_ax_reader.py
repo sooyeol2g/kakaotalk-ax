@@ -119,5 +119,44 @@ class AXReadingTests(unittest.TestCase):
         self.assertFalse(self.native.calls)
 
 
+class TailNative(SnapshotNative):
+    def call(self, action, titles, text=None, max_rows=None):
+        self.calls.append((action, titles, text, max_rows))
+        raw = copy.deepcopy(self.raw)
+        if max_rows is not None:
+            raw["rowStart"] = max(0, len(raw["rows"]) - max_rows)
+            raw["rows"] = raw["rows"][raw["rowStart"]:]
+            raw["rowsTruncated"] = raw["rowStart"] > 0
+        return raw
+
+
+class RecentOnlyReadingTests(unittest.TestCase):
+    def setUp(self):
+        self.native = TailNative()
+
+    def test_recent_only_asks_native_for_just_the_newest_rows(self):
+        result = self.native.read_messages("Fixture", 2, recent_only=True)
+        self.assertEqual(self.native.calls, [("read", ["Fixture"], None, 2)])
+        self.assertEqual([item["rowIndex"] for item in result["items"]], [3, 4])
+        self.assertTrue(result["hasMore"])
+        self.assertIsNone(result["nextOffset"])
+        self.assertEqual(result["coverage"]["scope"], "newest_exposed_ax_rows")
+
+    def test_recent_only_without_older_rows_has_no_more(self):
+        result = self.native.read_messages("Fixture", 50, recent_only=True)
+        self.assertEqual(len(result["items"]), 5)
+        self.assertFalse(result["hasMore"])
+
+    def test_default_read_still_fetches_every_exposed_row(self):
+        self.native.read_messages("Fixture", 2)
+        self.assertEqual(self.native.calls, [("read", ["Fixture"], None, None)])
+
+    def test_recent_only_cannot_be_paged(self):
+        for request in [dict(offset=2, snapshot_id="a" * 24), dict(recent_only="yes")]:
+            with self.subTest(request=request), self.assertRaises(ValueError):
+                self.native.read_messages("Fixture", 2, **{"recent_only": True, **request})
+        self.assertFalse(self.native.calls)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,14 +55,16 @@ class NativeAX(AXOperations):
                     os.unlink(name)
         return binary
 
-    def call(self, action, titles, text=None):
+    def call(self, action, titles, text=None, **options):
         with ui_session() if action in ("send", "raise") else nullcontext():
-            return self._call(action, titles, text)
+            return self._call(action, titles, text, **options)
 
-    def _call(self, action, titles, text=None):
+    def _call(self, action, titles, text=None, max_rows=None):
         request = {"action": action, "windowTitles": titles}
         if text is not None:
             request["text"] = text
+        if max_rows is not None:
+            request["maxRows"] = max_rows
         binary = self.build("read") if action in ("read", "windows") else self.build()
         result = subprocess.run([str(binary)], input=json.dumps(request, ensure_ascii=False),
                                 capture_output=True, text=True, timeout=12)
@@ -92,11 +94,15 @@ class NativeAX(AXOperations):
             raise RuntimeError("Invalid native AX control result")
         return value
 
-    def read_messages(self, window_title, limit=50, offset=0, snapshot_id=""):
+    def read_messages(self, window_title, limit=50, offset=0, snapshot_id="", recent_only=False):
         """Read exposed AX rows, newest page first, preserving row order within a page.
 
         A snapshot ID is required for older pages so incoming messages cannot
         silently shift offsets. Reads preserve the current window state.
+
+        recent_only reads just the newest `limit` exposed rows. It is much faster
+        on rooms whose rows are expensive to traverse, but its snapshot covers
+        only those rows, so it cannot be paged (offset must be 0).
         """
         if not isinstance(window_title, str) or not window_title.strip() or len(window_title.encode("utf-8")) > 4096:
             raise ValueError("An exact open window_title of 1..4096 UTF-8 bytes is required")
@@ -106,7 +112,11 @@ class NativeAX(AXOperations):
             raise ValueError("snapshot_id must be the ID returned by an AX read")
         if offset and not snapshot_id:
             raise ValueError("snapshot_id is required for offset > 0; read the first page again")
-        raw = self.call("read", [window_title])
+        if not isinstance(recent_only, bool):
+            raise ValueError("recent_only must be a boolean")
+        if recent_only and (offset or snapshot_id):
+            raise ValueError("recent_only reads cannot be paged; use offset 0 without snapshot_id")
+        raw = self.call("read", [window_title], max_rows=limit) if recent_only else self.call("read", [window_title])
         if raw.get("status") != "ok":
             return raw
         snapshot = snapshot_digest(raw)
@@ -120,11 +130,13 @@ class NativeAX(AXOperations):
         return {
             "status": "ok", "source": "macos_accessibility", "windowTitle": window_title,
             "items": items[start:end], "total": len(items), "limit": limit, "offset": offset,
-            "hasMore": start > 0, "nextOffset": offset + end - start if start > 0 else None,
+            "hasMore": raw["rowStart"] > 0 if recent_only else start > 0,
+            "nextOffset": None if recent_only else (offset + end - start if start > 0 else None),
             "snapshotId": snapshot, "textMessageCount": sum(item["kind"] == "text" for item in items),
             "unclassifiedRowCount": sum(item["kind"] == "unclassified" for item in items),
             "attachmentRowCount": sum(item["kind"] == "attachment" for item in items),
-            "coverage": {"scope": "currently_exposed_ax_rows", "historyComplete": False,
+            "coverage": {"scope": "newest_exposed_ax_rows" if recent_only else "currently_exposed_ax_rows",
+                         "historyComplete": False,
                          "consistency": "best_effort", "exposedRowCount": raw["exposedRowCount"],
                          "rowsTruncated": raw["rowsTruncated"], "rowStart": raw["rowStart"],
                          "rowLimit": 1000, "scrollPerformed": False,
@@ -229,6 +241,8 @@ def main():
     command.add_argument("--limit", type=int, default=50)
     command.add_argument("--offset", type=int, default=0)
     command.add_argument("--snapshot-id", default="")
+    command.add_argument("--recent-only", action="store_true",
+                         help="Read only the newest --limit rows (faster, not pageable)")
     args = parser.parse_args()
     if args.command == "mcp":
         from kakaotalk_mcp import main as serve
@@ -246,7 +260,8 @@ def main():
         elif args.command in ("ax-windows", "status"):
             value = NativeAX().windows()
         elif args.command == "ax-read":
-            value = NativeAX().read_messages(args.window_title, args.limit, args.offset, args.snapshot_id)
+            value = NativeAX().read_messages(args.window_title, args.limit, args.offset, args.snapshot_id,
+                                             recent_only=args.recent_only)
         elif args.command == "build":
             started = time.monotonic()
             NativeAX().build(args.kind)

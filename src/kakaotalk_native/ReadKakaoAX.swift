@@ -12,6 +12,8 @@ let started = ProcessInfo.processInfo.systemUptime
 var deadline = started + 8.0
 var uiActions = 0
 let maximumRows = 1000
+// Optional tail cap for recent-only reads; each exposed row can cost many AX round trips.
+var rowCap = maximumRows
 var nodesVisited = 0
 var textBytes = 0
 var optionalAttributeFailures: [String: Int] = [:]
@@ -128,7 +130,7 @@ func rows(_ table: AXUIElement) throws -> (items: [AXUIElement], count: Int, sta
     var count: CFIndex = 0
     let result = AXUIElementGetAttributeValueCount(table, "AXRows" as CFString, &count)
     if result == .success {
-        let start = max(0, count - maximumRows)
+        let start = max(0, count - rowCap)
         if count == 0 { return ([], 0, 0, "AXRows") }
         var value: CFArray?
         let copied = AXUIElementCopyAttributeValues(table, "AXRows" as CFString, start, count - start, &value)
@@ -141,8 +143,8 @@ func rows(_ table: AXUIElement) throws -> (items: [AXUIElement], count: Int, sta
         throw ReadFailure.blocked("transcript_rows_unavailable")
     }
     let children = try elements(table, "AXChildren").filter { try string($0, "AXRole") == "AXRow" }
-    let start = max(0, children.count - maximumRows)
-    return (Array(children.suffix(maximumRows)), children.count, start, "AXChildren")
+    let start = max(0, children.count - rowCap)
+    return (Array(children.suffix(rowCap)), children.count, start, "AXChildren")
 }
 
 func readRow(_ row: AXUIElement, _ index: Int) throws -> [String: Any] {
@@ -325,6 +327,12 @@ func run() throws -> [String: Any] {
           let request = try JSONSerialization.jsonObject(with: input) as? [String: Any],
           let action = request["action"] as? String, ["windows", "read", "attachment"].contains(action) else {
         throw ReadFailure.blocked("invalid_read_request")
+    }
+    if let cap = request["maxRows"] {
+        guard action == "read", let value = cap as? Int, (1...maximumRows).contains(value) else {
+            throw ReadFailure.blocked("invalid_read_request")
+        }
+        rowCap = value
     }
     guard AXIsProcessTrusted() else { throw ReadFailure.blocked("accessibility_permission_required") }
     guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.kakao.KakaoTalkMac" }) else {
