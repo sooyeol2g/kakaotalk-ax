@@ -191,8 +191,12 @@ func searchButtons(_ field: AXUIElement) throws -> [AXUIElement] {
     let siblings = elements(parent as! AXUIElement)
     guard let index = siblings.firstIndex(where: { CFEqual($0, field) }) else { throw ControlFailure.blocked("search_field_missing") }
     let buttons = Array(siblings.dropFirst(index + 1).prefix(5))
+    // Known layouts, oldest first. KakaoTalk 26.9 renumbered the fourth button only;
+    // the previous/next buttons used below keep their identifiers.
+    let layouts = [["_NS:10", "_NS:30", "_NS:43", "_NS:56", "_NS:80"],
+                   ["_NS:10", "_NS:30", "_NS:43", "_NS:69", "_NS:80"]]
     guard buttons.count == 5, buttons.allSatisfy({ string($0, "AXRole") == "AXButton" }),
-          buttons.map({ string($0, "AXIdentifier") }) == ["_NS:10", "_NS:30", "_NS:43", "_NS:56", "_NS:80"] else {
+          layouts.contains(buttons.map({ string($0, "AXIdentifier") })) else {
         throw ControlFailure.blocked("search_toolbar_layout_unknown")
     }
     return buttons
